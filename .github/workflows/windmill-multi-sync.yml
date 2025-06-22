@@ -1,0 +1,38 @@
+name: Windmill Multi-Workspace 2-Way Sync
+'on':
+  push:
+    branches:
+      - main
+jobs:
+  windmill-multi-sync:
+    runs-on: ubuntu-latest
+    if: 'github.event.head_commit.author.name != ''github-actions[bot]'''
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Install latest Windmill CLI
+        run: >
+          LATEST=$(curl -s
+          https://api.github.com/repos/windmill-labs/windmill/releases/latest |
+          jq -r .tag_name)
+
+          curl -L
+          "https://github.com/windmill-labs/windmill/releases/download/${LATEST}/wmill-linux-amd64"
+          -o /usr/local/bin/wmill
+
+          chmod +x /usr/local/bin/wmill
+      - name: Multi-workspace 2-way sync
+        env:
+          WINDMILL_TOKEN: '${{ secrets.WINDMILL_TOKEN }}'
+        run: "set -e\nROOT_DIR=\"$PWD\"\nfor ws_dir in windmill/*; do\n  ws_name=$(basename \"$ws_dir\")\n  # Skip non-directories and wmill.yaml\n  if [[ ! -d \"$ws_dir\" ]] || [[ \"$ws_name\" == \"wmill.yaml\" ]]; then\n    continue\n  fi\n\n  echo \"==> Syncing workspace: $ws_name\"\n\n  # Infer base_url from wmill.yaml if present, else use a default\n  BASE_URL=$(yq '.remotes.default.base_url' windmill/wmill.yaml 2>/dev/null || echo \"http://localhost:8000\")\n  # Write credentials.json for this workspace\n  mkdir -p ~/.windmill\n  cat > ~/.windmill/credentials.json <<EOF { \"base_url\": \"$BASE_URL\",\"workspace\": \"$ws_name\",\"token\": \"$WINDMILL_TOKEN\"}\n  EOF\n\n  cd \"$ws_dir\"\n\n  # Pull from Windmill\n  wmill sync pull --workspace \"$ws_name\" || { echo \"Pull failed for $ws_name\"; exit 1; }\n\n  # Check for changes and commit if needed\n  if [ -n \"$(git status --porcelain)\" ]; then\n    git add .\n    git commit -m \"\U0001F501 Sync from Windmill [$ws_name] at $(date -u +\"%Y-%m-%dT%H:%M:%SZ\")\"\n    echo \"Committed changes for $ws_name\"\n  else\n    echo \"No changes to commit for $ws_name\"\n  fi\n\n  # Push to Windmill\n  wmill sync push --workspace \"$ws_name\" || { echo \"Push failed for $ws_name\"; exit 1; }\n\n  cd \"$ROOT_DIR\"\ndone\n"
+      - name: Push changes to GitHub
+        if: 'github.event.head_commit.author.name != ''github-actions[bot]'''
+        run: >
+          git config --global user.name "github-actions[bot]"
+
+          git config --global user.email
+          "github-actions[bot]@users.noreply.github.com"
+
+          git push || echo "No changes to push"
